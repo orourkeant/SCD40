@@ -55,6 +55,39 @@ def led_normal_flash():
     time.sleep(0.1)
     led.off()
 
+def led_error_pattern(code):
+    """Show error code pattern once: code blinks + 1 sec break"""
+    for _ in range(code):
+        led.on()
+        time.sleep(0.2)  # Short blink
+        led.off()
+        time.sleep(0.2)
+    time.sleep(1)  # 1 second break
+
+# ---------------- MQTT RECONNECTION ----------------
+def mqtt_reconnect_attempt(wlan):
+    """
+    Attempt single MQTT reconnection
+    Returns True if successful, False if failed
+    """
+    global client
+    
+    # Check WiFi status first
+    if not wlan.isconnected():
+        print("WiFi down - cannot attempt MQTT reconnection")
+        return False
+    
+    try:
+        client = MQTTClient(CLIENT_ID, MQTT_BROKER, MQTT_PORT)
+        client.connect()
+        print("MQTT reconnected successfully")
+        return True
+        
+    except Exception as e:
+        print("MQTT reconnection failed: {}".format(str(e)))
+        log_error("MQTT reconnection failed: {}".format(str(e)))
+        return False
+
 # ---------------- STARTUP ----------------
 led_startup()
 
@@ -140,13 +173,46 @@ except Exception as e:
 print("All systems ready - starting main loop")
 
 # ---------------- MAIN LOOP ----------------
+mqtt_error_state = False
+reconnect_attempt_count = 0
+
 while True:
     try:
-        # 60 second cycle with LED flash every 10 seconds
+        # Handle MQTT error state
+        if mqtt_error_state:
+            # Show error LED pattern
+            led_error_pattern(2)
+            
+            # Attempt reconnection
+            if mqtt_reconnect_attempt(wlan):
+                # Success! Send event and reset state
+                reconnect_attempt_count += 1
+                success_msg = json.dumps({
+                    "event": "mqtt_reconnected",
+                    "attempts": reconnect_attempt_count
+                })
+                try:
+                    client.publish(b"sensors/scd40/events", success_msg)
+                    print("MQTT reconnection successful - resuming normal operation")
+                    mqtt_error_state = False
+                    reconnect_attempt_count = 0
+                except:
+                    # If event publish fails, we're still in error state
+                    pass
+            else:
+                # Failed, increment counter and wait
+                reconnect_attempt_count += 1
+            
+            # Wait 5 seconds before next attempt
+            time.sleep(5)
+            continue
+        
+        # Normal operation - 60 second cycle with LED flash every 10 seconds
         for i in range(6):
             led_normal_flash()
             time.sleep(10)
         
+        # Take sensor reading and publish
         result = sensor.read_measurement()
         if result:
             co2, temp, rh = result
@@ -157,10 +223,25 @@ while True:
                 "temp": temp,
                 "rh": rh
             })
-            client.publish(MQTT_TOPIC, payload)
-            print("Published:", payload)
+            
+            try:
+                client.publish(MQTT_TOPIC, payload)
+                print("Published:", payload)
+            except Exception as e:
+                print("MQTT publish failed:", e)
+                log_error("MQTT publish failed: {}".format(str(e)))
+                mqtt_error_state = True
+                reconnect_attempt_count = 0
         else:
             print("Waiting for valid data...")
+            try:
+                waiting_msg = json.dumps({"event": "sensor_waiting_for_data"})
+                client.publish(b"sensors/scd40/events", waiting_msg)
+            except Exception as e:
+                print("Failed to publish sensor waiting event:", e)
+                log_error("MQTT publish failed: {}".format(str(e)))
+                mqtt_error_state = True
+                reconnect_attempt_count = 0
             
     except Exception as e:
         print("Error in main loop:", e)
