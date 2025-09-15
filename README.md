@@ -12,8 +12,7 @@ A robust environmental monitoring system using a Raspberry Pi Pico and SCD-40 se
 - **Automatic Recovery**: Self-healing WiFi and MQTT connections with diagnostic event publishing
 - **Multi-Network WiFi**: Supports multiple WiFi networks with intelligent reconnection
 - **Build Versioning**: Integrated version tracking with console display
-- **Never-Give-Up Architecture**: Persistent reconnection attempts (device is useless without connectivity)
-
+- **Never-Give-Up Architecture**: Persistent reconnection attempts
 ## Hardware Requirements
 
 - **Raspberry Pi Pico W** (with WiFi capability)
@@ -108,7 +107,7 @@ The onboard LED provides comprehensive visual feedback about system status:
 
 ### WiFi Recovery Behavior
 
-The system treats WiFi connectivity as critical (device is useless without it):
+The system treats WiFi connectivity as critical:
 
 - **Never Gives Up**: Continues WiFi reconnection attempts indefinitely
 - **Runtime Monitoring**: Checks WiFi status every cycle, not just at startup
