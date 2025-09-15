@@ -1,3 +1,15 @@
+# Environmental Monitoring System - Raspberry Pi Pico with SCD-40 Sensor
+# Version: 1.0.3
+# Build Date: 2025-09-15
+#
+# Features:
+# - SCD-40 CO2, Temperature, and Humidity monitoring
+# - MQTT communication with automatic reconnection
+# - WiFi monitoring and reconnection
+# - Comprehensive error logging and LED status indicators
+# - Robust error handling and recovery
+
+# v1.0.3 - 15-09-2025 20:10
 import time
 import network
 import json
@@ -6,6 +18,10 @@ from machine import I2C, Pin
 from umqtt.simple import MQTTClient
 from scd40 import SCD40
 from config import WIFI_NETWORKS, MQTT_BROKER, MQTT_PORT, MQTT_TOPIC, CLIENT_ID
+
+# Build Information
+VERSION = "1.0.3"
+BUILD_DATE = "2025-09-15"
 
 # ---------------- LOGGING ----------------
 def log_error(message):
@@ -64,35 +80,31 @@ def led_error_pattern(code):
         time.sleep(0.2)
     time.sleep(1)  # 1 second break
 
-# ---------------- MQTT RECONNECTION ----------------
-def mqtt_reconnect_attempt(wlan):
-    """
-    Attempt single MQTT reconnection
-    Returns True if successful, False if failed
-    """
-    global client
-    
-    # Check WiFi status first
-    if not wlan.isconnected():
-        print("WiFi down - cannot attempt MQTT reconnection")
-        return False
-    
-    try:
-        client = MQTTClient(CLIENT_ID, MQTT_BROKER, MQTT_PORT)
-        client.connect()
-        print("MQTT reconnected successfully")
-        return True
+def led_continuous_error(code, duration):
+    """Show error code pattern continuously for specified duration (seconds)"""
+    start_time = time.time()
+    while time.time() - start_time < duration:
+        # Show the error pattern
+        for _ in range(code):
+            led.on()
+            time.sleep(0.2)  # Short blink
+            led.off()
+            time.sleep(0.2)
         
-    except Exception as e:
-        print("MQTT reconnection failed: {}".format(str(e)))
-        log_error("MQTT reconnection failed: {}".format(str(e)))
-        return False
+        # 1 second break between pattern repeats
+        remaining_time = duration - (time.time() - start_time)
+        if remaining_time > 1:
+            time.sleep(1)
+        elif remaining_time > 0:
+            time.sleep(remaining_time)
+            break
 
-# ---------------- STARTUP ----------------
-led_startup()
-
-# ---------------- CONNECT WIFI ----------------
+# ---------------- WIFI CONNECTION ----------------
 def connect_wifi():
+    """
+    Try to connect to WiFi networks in order
+    Returns tuple: (wlan_object, successful_network_dict) or (None, None) if all fail
+    """
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
     
@@ -130,17 +142,92 @@ def connect_wifi():
             print(f"\nSuccessfully connected to {ssid}")
             print(f"IP config: {wlan.ifconfig()}")
             print(f"Final status: {wlan.status()}")
-            return wlan
+            return wlan, network_info
         else:
             print(f"Failed to connect to {ssid}")
     
     print("\nAll WiFi networks failed!")
     log_error("WiFi connection failed - all networks exhausted")
-    return None
+    return None, None
 
-wlan = connect_wifi()
-if not wlan:
+def wifi_reconnect_attempt(wlan, network_info):
+    """
+    Attempt single WiFi reconnection to known-good network with LED indication
+    Returns True if successful, False if failed
+    """
+    ssid = network_info["ssid"]
+    password = network_info["password"]
+    
+    try:
+        # Try to reconnect to the specific network
+        wlan.connect(ssid, password)
+        
+        # Wait for connection with LED indication (shorter timeout than initial connection)
+        timeout = 10
+        start_time = time.time()
+        
+        while not wlan.isconnected():
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                break
+                
+            # Show WiFi error pattern during reconnection attempt
+            led_error_pattern(1)
+            time.sleep(0.5)
+        
+        if wlan.isconnected():
+            print("WiFi reconnected successfully to {}".format(ssid))
+            return True
+        else:
+            print("WiFi reconnection failed to {}".format(ssid))
+            log_error("WiFi reconnection failed to {}".format(ssid))
+            return False
+            
+    except Exception as e:
+        print("WiFi reconnection error: {}".format(str(e)))
+        log_error("WiFi reconnection error: {}".format(str(e)))
+        return False
+
+# ---------------- MQTT RECONNECTION ----------------
+def mqtt_reconnect_attempt(wlan):
+    """
+    Attempt single MQTT reconnection
+    Returns True if successful, False if failed
+    """
+    global client
+    
+    # Check WiFi status first
+    if not wlan.isconnected():
+        print("WiFi down - cannot attempt MQTT reconnection")
+        return False
+    
+    try:
+        client = MQTTClient(CLIENT_ID, MQTT_BROKER, MQTT_PORT)
+        client.connect()
+        print("MQTT reconnected successfully")
+        return True
+        
+    except Exception as e:
+        print("MQTT reconnection failed: {}".format(str(e)))
+        log_error("MQTT reconnection failed: {}".format(str(e)))
+        return False
+
+# ---------------- STARTUP ----------------
+led_startup()
+
+# Display build information
+print("=" * 50)
+print("Environmental Monitoring System")
+print(f"Version: {VERSION}")
+print(f"Build Date: {BUILD_DATE}")
+print("=" * 50)
+
+# ---------------- CONNECT WIFI ----------------
+wlan, successful_network = connect_wifi()
+if not wlan or not successful_network:
     led_error(1)  # Error code 1 - WiFi failed
+
+print("Connected to WiFi network: {}".format(successful_network["ssid"]))
 
 # ---------------- CONNECT MQTT ----------------
 try:
@@ -173,38 +260,68 @@ except Exception as e:
 print("All systems ready - starting main loop")
 
 # ---------------- MAIN LOOP ----------------
+wifi_error_state = False
 mqtt_error_state = False
-reconnect_attempt_count = 0
+wifi_reconnect_attempt_count = 0
+mqtt_reconnect_attempt_count = 0
 
 while True:
     try:
-        # Handle MQTT error state
-        if mqtt_error_state:
-            # Show error LED pattern
-            led_error_pattern(2)
+        # Handle WiFi error state (highest priority)
+        if wifi_error_state or not wlan.isconnected():
+            if not wifi_error_state:
+                # Just detected WiFi disconnection
+                print("WiFi connection lost - entering reconnection mode")
+                log_error("WiFi connection lost - attempting reconnection to {}".format(successful_network["ssid"]))
+                wifi_error_state = True
+                wifi_reconnect_attempt_count = 0
             
-            # Attempt reconnection
+            # Attempt WiFi reconnection
+            if wifi_reconnect_attempt(wlan, successful_network):
+                # Success! Send event and reset state
+                wifi_reconnect_attempt_count += 1
+                print("WiFi reconnection successful - resuming normal operation")
+                wifi_error_state = False
+                
+                # Also reset MQTT error state since WiFi was down
+                if mqtt_error_state:
+                    print("Resetting MQTT error state due to WiFi reconnection")
+                    mqtt_error_state = False
+                    mqtt_reconnect_attempt_count = 0
+                
+                wifi_reconnect_attempt_count = 0
+            else:
+                # Failed, increment counter and show continuous error pattern
+                wifi_reconnect_attempt_count += 1
+                # Show continuous WiFi error LED pattern for 5 seconds
+                led_continuous_error(1, 5)
+            
+            continue
+        
+        # Handle MQTT error state (only when WiFi is OK)
+        if mqtt_error_state:
+            # Attempt MQTT reconnection
             if mqtt_reconnect_attempt(wlan):
                 # Success! Send event and reset state
-                reconnect_attempt_count += 1
+                mqtt_reconnect_attempt_count += 1
                 success_msg = json.dumps({
                     "event": "mqtt_reconnected",
-                    "attempts": reconnect_attempt_count
+                    "attempts": mqtt_reconnect_attempt_count
                 })
                 try:
                     client.publish(b"sensors/scd40/events", success_msg)
                     print("MQTT reconnection successful - resuming normal operation")
                     mqtt_error_state = False
-                    reconnect_attempt_count = 0
+                    mqtt_reconnect_attempt_count = 0
                 except:
                     # If event publish fails, we're still in error state
                     pass
             else:
-                # Failed, increment counter and wait
-                reconnect_attempt_count += 1
+                # Failed, increment counter and show continuous error pattern
+                mqtt_reconnect_attempt_count += 1
+                # Show continuous MQTT error LED pattern for 5 seconds
+                led_continuous_error(2, 5)
             
-            # Wait 5 seconds before next attempt
-            time.sleep(5)
             continue
         
         # Normal operation - 60 second cycle with LED flash every 10 seconds
@@ -231,7 +348,7 @@ while True:
                 print("MQTT publish failed:", e)
                 log_error("MQTT publish failed: {}".format(str(e)))
                 mqtt_error_state = True
-                reconnect_attempt_count = 0
+                mqtt_reconnect_attempt_count = 0
         else:
             print("Waiting for valid data...")
             try:
@@ -241,7 +358,7 @@ while True:
                 print("Failed to publish sensor waiting event:", e)
                 log_error("MQTT publish failed: {}".format(str(e)))
                 mqtt_error_state = True
-                reconnect_attempt_count = 0
+                mqtt_reconnect_attempt_count = 0
             
     except Exception as e:
         print("Error in main loop:", e)
