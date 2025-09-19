@@ -12,7 +12,8 @@ A robust environmental monitoring system using a Raspberry Pi Pico and SCD-40 se
 - **Automatic Recovery**: Self-healing WiFi and MQTT connections with diagnostic event publishing
 - **Multi-Network WiFi**: Supports multiple WiFi networks with intelligent reconnection
 - **Build Versioning**: Integrated version tracking with console display
-- **Never-Give-Up Architecture**: Persistent reconnection attempts
+- **Never-Give-Up Architecture**: Persistent reconnection attempts (device is useless without connectivity)
+
 ## Hardware Requirements
 
 - **Raspberry Pi Pico W** (with WiFi capability)
@@ -107,7 +108,7 @@ The onboard LED provides comprehensive visual feedback about system status:
 
 ### WiFi Recovery Behavior
 
-The system treats WiFi connectivity as critical:
+The system treats WiFi connectivity as critical (device is useless without it):
 
 - **Never Gives Up**: Continues WiFi reconnection attempts indefinitely
 - **Runtime Monitoring**: Checks WiFi status every cycle, not just at startup
@@ -202,6 +203,32 @@ The project includes a complete Node-RED dashboard flow for visualizing the sens
 - **Temperature Gauge**: 0-50°C range
 - **Humidity Gauge**: 0-100% range
 - **Trend Charts**: Three separate 24-hour historical views
+
+### Data Persistence Configuration
+
+**Important**: The dashboard is configured with persistent storage to survive Node-RED restarts.
+
+**Configuration Required:**
+1. Edit your Node-RED `settings.js` file:
+   ```javascript
+   contextStorage: {
+       default: {
+           module: "localfilesystem"
+       }
+   }
+   ```
+
+2. Restart Node-RED: `sudo systemctl restart nodered`
+
+**Behavior:**
+- **Historical data survives restarts**: 24-hour trend charts retain data through Node-RED crashes/restarts
+- **24-hour retention still applies**: Data older than 24 hours is automatically discarded  
+- **Gradual recovery**: Charts rebuild from saved data rather than starting empty
+- **Storage location**: Data stored in `~/.node-red/context/` directory
+
+**Impact:**
+- **Before configuration**: Node-RED restarts result in empty trend charts
+- **After configuration**: Charts retain whatever historical data was saved to disk
 
 ## File Structure
 
